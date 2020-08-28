@@ -33,6 +33,7 @@ do
       else
         y = y + 1
       end
+      msg = string.format("[%.2f] %s", computer.uptime(), msg)
       gpu.set(1, y, msg)
     end
     function k.log(...)
@@ -63,6 +64,7 @@ function k.error(msg)
   while true do pull() end
 end
 
+k.log("core kernel routines")
 -- read file contents
 do
   local bfs = component.proxy(computer.getBootAddress())
@@ -87,11 +89,12 @@ end
 -- This scheduler is comparatively basic. Threads
 -- are only resumed when a signal is received or
 -- when they receive a message.
-
+k.log("scheduler")
 do
   local threads = {}
   local api = {}
   local pid = 0
+  local current = 0
 
   function api.new(func, name)
     local new = {
@@ -105,11 +108,26 @@ do
     return pid
   end
 
+  function api.find(name)
+    for i, t in pairs(threads) do
+      if t.name == name then
+        return i
+      end
+    end
+    return nil, "thread not found"
+  end
+
   function api.message(pid, ...)
-    computer.pushSignal("ipc_message", pid, ...)
+    -- ipc_message(to, from, ...)
+    computer.pushSignal("ipc_message", pid, current, ...)
+  end
+
+  function api.current()
+    return current
   end
 
   function api.info(pid)
+    pid = pid or current
     if not threads[pid] then
       return nil, "thread not found"
     end
@@ -124,6 +142,29 @@ do
   function api.loop()
     api.loop = nil
     while #threads > 0 do
+      local sig = table.pack(computer.pullSignal())
+      if sig[1] == "ipc_message" then
+        local to = table.remove(sig, 2)
+        if threads[to] then
+          local t = threads[to]
+          local start = computer.uptime()
+          local ok, ret = coroutine.resume(t.coro, table.unpack(sig))
+          t.runtime = t.runtime + (computer.uptime() - start)
+          if (not ok and ret) or coroutine.status(t.coro) == "dead" then
+            threads[to] = nil
+          end
+        end
+      else
+        for i, t in pairs(threads) do
+          current = i
+          local start = computer.uptime()
+          local ok, ret = coroutine.resume(t.coro, table.unpack(sig))
+          t.runtime = t.runtime + (computer.uptime() - start)
+          if (not ok and ret) or coroutine.status(t.coro) == "dead" then
+            threads[i] = nil
+          end
+        end
+      end
     end
     k.error("all threads died")
   end
@@ -131,8 +172,44 @@ do
   k.sched = api
 end
 
---== IPC callbacks ==--
+--== sandboxing ==--
+k.log("table.copy")
+function table.copy(tbl)
+  local seen = {}
+  local function copy(t, to)
+    to = to or {}
+    for k, v in pairs(t) do
+      if type(v) == "table" then
+        if not seen[v] then
+          seen[v] = {}
+          to[k] = seen[v]
+          copy(v, seen[v])
+        end
+      else
+        to[k] = v
+      end
+    end
+    return to
+  end
+  return copy(tbl)
+end
 
-local ipc = {}
+function loadfile(file, mode, env)
+  local data, err = k.readfile(file)
+  if not data then
+    return nil, err
+  end
+  return load(data, "="..file, mode, env)
+end
 
+k.log("loading init")
+--== spawn init thread ==--
+local ok, err = loadfile("/computos/init.lua")
+if not ok then
+  k.error(err)
+end
+
+k.sched.new(err, "[init]")
+
+k.sched.loop()
 k.error("premature exit!")
