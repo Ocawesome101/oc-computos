@@ -1,7 +1,7 @@
--- ComputOS core --
+--==-- ComputOS kernel --==--
 
 --== core kernel routines ==--
-local k = {}
+k = {}
 k._VERSION = "ComputOS 0.1.0"
 
 -- retrieve a component proxy
@@ -37,7 +37,7 @@ do
       gpu.set(1, y, msg)
     end
     function k.log(...)
-      local msg = table.concat(table.pack(..., " "))
+      local msg = table.concat(table.pack(...), " ")
       for ln in msg:gmatch("[^\n]+") do
         put(ln)
       end
@@ -68,6 +68,7 @@ k.log("core kernel routines")
 -- read file contents
 do
   local bfs = component.proxy(computer.getBootAddress())
+  k.bfs = bfs
 
   function k.readfile(file)
     checkArg(1, file, "string")
@@ -159,8 +160,14 @@ do
           current = i
           local start = computer.uptime()
           local ok, ret = coroutine.resume(t.coro, table.unpack(sig))
+          k.log(tostring(ok), tostring(ret))
           t.runtime = t.runtime + (computer.uptime() - start)
           if (not ok and ret) or coroutine.status(t.coro) == "dead" then
+            if not ok and ret then
+              k.log("thread died - " .. t.name .. ": " .. ret)
+            else
+              k.log("thread died - " .. t.name)
+            end
             threads[i] = nil
           end
         end
@@ -195,11 +202,14 @@ function table.copy(tbl)
 end
 
 function loadfile(file, mode, env)
+  checkArg(1, file, "string")
+  checkArg(2, mode, "string", "nil")
+  checkArg(3, env, "table", "nil")
   local data, err = k.readfile(file)
   if not data then
     return nil, err
   end
-  return load(data, "="..file, mode, env)
+  return load(data, "="..file, mode, env or _G)
 end
 
 k.log("loading init")
@@ -209,7 +219,7 @@ if not ok then
   k.error(err)
 end
 
-k.sched.new(err, "[init]")
-
+k.sched.new(ok, "[init]")
+computer.pushSignal("init")
 k.sched.loop()
 k.error("premature exit!")
